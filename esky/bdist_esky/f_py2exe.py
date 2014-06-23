@@ -6,7 +6,7 @@
 
 """
 
-from __future__ import with_statement
+
 
 
 import os
@@ -22,30 +22,30 @@ import zipfile
 import ctypes
 
 
-from py2exe.build_exe import py2exe
+from py2exe.distutils_buildexe import py2exe
 
 import esky
 from esky.util import is_core_dependency, ESKY_CONTROL_DIR
 from esky import winres
 
 try:
-    import py2exe.mf as modulefinder
+    import py2exe.mf3 as modulefinder
 except ImportError:
     modulefinder = None
 
 #  Hack to make win32com work seamlessly with py2exe
-if modulefinder is not None:
-  try:
-    import win32com
-    for p in win32com.__path__[1:]:
-        modulefinder.AddPackagePath("win32com", p)
-    for extra in ["win32com.shell"]: #,"win32com.mapi"
-        __import__(extra)
-        m = sys.modules[extra]
-        for p in m.__path__[1:]:
-           modulefinder.AddPackagePath(extra, p)
-  except ImportError:
-     pass
+# if modulefinder is not None:
+#   try:
+#     import win32com
+#     for p in win32com.__path__[1:]:
+#         modulefinder.AddPackagePath("win32com", p)
+#     for extra in ["win32com.shell"]: #,"win32com.mapi"
+#         __import__(extra)
+#         m = sys.modules[extra]
+#         for p in m.__path__[1:]:
+#            modulefinder.AddPackagePath(extra, p)
+#   except ImportError:
+#      pass
 
 
 class custom_py2exe(py2exe): 
@@ -130,7 +130,7 @@ def freeze(dist):
         if options["bundle_files"] < 3 and dist.compile_bootstrap_exes:
              err = "can't compile bootstrap exes when bundle_files < 3"
              raise RuntimeError(err)
-    for (nm,val) in options.iteritems():
+    for (nm,val) in options.items():
         setattr(cmd,nm,val)
     cmd.dist_dir = dist.freeze_dir
     cmd.finalize_options()
@@ -212,7 +212,7 @@ def freeze(dist):
             exepath = dist.copy_to_bootstrap_env(exe.name)
             #  Read the py2exe metadata from the frozen exe.  We will
             #  need to duplicate some of these fields when to rewrite it.
-            coderes = winres.load_resource(exepath,u"PYTHONSCRIPT",1,0)
+            coderes = winres.load_resource(exepath,"PYTHONSCRIPT",1,0)
             headsz = struct.calcsize("iiii")
             (magic,optmz,unbfrd,codesz) = struct.unpack("iiii",coderes[:headsz])
             assert magic == 0x78563412
@@ -226,11 +226,11 @@ def freeze(dist):
                          optmz, # optimization level to enable
                          unbfrd,  # whether to use unbuffered output
                          len(code),
-                      ) + "\x00" + code + "\x00\x00"
-            winres.add_resource(exepath,coderes,u"PYTHONSCRIPT",1,0)
+                      ) + b"\0" + code + b"\0"
+            winres.add_resource(exepath,coderes,"PYTHONSCRIPT",1,0)
         #  If the python dll hasn't been copied into the bootstrap env,
         #  make sure it's stored in each bootstrap dll as a resource.
-        pydll = u"python%d%d.dll" % sys.version_info[:2]
+        pydll = "python%d%d.dll" % sys.version_info[:2]
         if not os.path.exists(os.path.join(dist.bootstrap_dir,pydll)):
             buf = ctypes.create_string_buffer(3000)
             GetModuleFileNameA = ctypes.windll.kernel32.GetModuleFileNameA
@@ -373,7 +373,7 @@ def _chainload(target_dir):
       d_locals = d_globals = sys.modules["__main__"].__dict__
       d_locals["__name__"] = "__main__"
       for code in codelist:
-          exec code in d_globals, d_locals
+          exec(code, d_globals, d_locals)
       raise SystemExit(0)
 """ % (inspect.getsource(winres.load_resource).replace("\n","\n"+" "*4),)
 
