@@ -19,7 +19,7 @@ import ctypes
 import ctypes.wintypes
 import subprocess
 
-from esky.sudo import sudo_base as base
+from esky.sudo import sudo_base as base, b
 import esky.slaveproc
 
 
@@ -238,7 +238,7 @@ class SecureStringPipe(base.SecureStringPipe):
     def __init__(self,token=None,pipename=None):
         super(SecureStringPipe,self).__init__(token)
         if pipename is None:
-            self.pipename = r"\\.\pipe\esky-" + uuid.uuid4().hex
+            self.pipename = b(r"\\.\pipe\esky-" + uuid.uuid4().hex)
             self.pipe = kernel32.CreateNamedPipeA(
                           self.pipename,0x03,0x00,1,8192,8192,0,None
                         )
@@ -310,9 +310,9 @@ def spawn_sudo(proxy):
         execinfo.cbSize = sizeof(execinfo)
         execinfo.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC
         execinfo.hwnd = None
-        execinfo.lpVerb = "runas"
-        execinfo.lpFile = exe[0]
-        execinfo.lpParameters = " ".join(exe[1:])
+        execinfo.lpVerb = b("runas")
+        execinfo.lpFile = b(exe[0])
+        execinfo.lpParameters = b(" ".join(exe[1:]))
         execinfo.lpDirectory = None
         execinfo.nShow = 0
         ShellExecuteEx(byref(execinfo))
