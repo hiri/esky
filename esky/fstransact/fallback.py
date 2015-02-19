@@ -7,6 +7,7 @@
 """
 
 import os
+import stat
 import sys
 import shutil
 
@@ -162,6 +163,8 @@ class FSTransaction(object):
         self.pending.append(("_remove",target))
 
     def _remove(self,target):
+        if not os.access(target, os.W_OK):
+            os.chmod(target, stat.S_IWUSR)
         if os.path.isfile(target):
             os.unlink(target)
         elif os.path.isdir(target):

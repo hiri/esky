@@ -171,6 +171,12 @@ def os():
 
 
 @lazy_import
+def stat():
+    import stat
+    return stat
+
+
+@lazy_import
 def socket():
     import socket
     return socket
@@ -677,6 +683,8 @@ class Esky(object):
         if path in manifest:
             return False
         try:
+            if not os.access(fullpath, os.W_OK):
+                os.chmod(fullpath, stat.S_IWUSR)
             if os.path.isdir(fullpath):
                 #  Remove paths starting with "esky" last, since we use
                 #  these to maintain state information.

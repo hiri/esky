@@ -8,6 +8,7 @@
 
 
 import os
+import stat
 import sys
 import errno
 import shutil
@@ -201,6 +202,8 @@ class FSTransaction(object):
 
     def _remove(self,target):
         target = unicode_path(target)
+        if not os.access(target, os.W_OK):
+            os.chmod(target, stat.S_IWUSR)
         if os.path.isdir(target):
             for nm in os.listdir(target):
                 self.remove(os.path.join(target,nm))
