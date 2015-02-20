@@ -228,6 +228,8 @@ class DefaultVersionFinder(VersionFinder):
                         else:
                             yield status
                 self._prepare_version(app,version,local_path)
+            except PermissionError:
+                raise  # if access is denied do not retry, let sudo handle it
             except (PatchError,EskyVersionError,EnvironmentError), e:
                 yield {"status":"retrying","size":None,"exception":e}
         yield {"status":"ready","path":name}
@@ -277,6 +279,10 @@ class DefaultVersionFinder(VersionFinder):
                         really_rename(partfilenm,outfilenm)
                 finally:
                     infile.close()
+            except PermissionError:
+                # if we don't have access rights to write part file just let
+                # the exception bubble up and sudo process will handle it
+                raise
             except Exception:
                 # Something went wrong.  To avoid infinite looping, we
                 # must remove that file from the link graph.
