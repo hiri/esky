@@ -59,7 +59,7 @@ def monitor_master_process(fpath):
         return None
     def monitor():
         if wait_for_master(fpath):
-            os._exit(1)
+            sys.exit()
     t = threading.Thread(target=monitor)
     t.daemon = True
     t.start()
