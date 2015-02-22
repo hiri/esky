@@ -86,6 +86,11 @@ def os():
     return os
 
 @lazy_import
+def stat():
+    import stat
+    return stat
+
+@lazy_import
 def shutil():
     import shutil
     return shutil
@@ -419,6 +424,10 @@ def copy_ownership_info(src,dst,cur="",default=None):
             copy_ownership_info(src,dst,os.path.join(cur,nm),default)
 
 
+def set_write_permission(path):
+    if os.path.exists(path) and not os.access(path, os.W_OK):
+        os.chmod(path, stat.S_IWUSR)
+
 
 def get_backup_filename(filename):
     """Get the name to which a backup of the given file can be written.
@@ -515,5 +524,4 @@ def really_rmtree(path):
                 break
         else:
             shutil.rmtree(path)
-
 

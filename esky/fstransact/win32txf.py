@@ -8,15 +8,14 @@
 
 
 import os
-import stat
 import sys
 import errno
-import shutil
 
-from esky.util import get_backup_filename, files_differ
+from esky.util import get_backup_filename, files_differ, set_write_permission
 
 if sys.platform != "win32":
     raise ImportError("win32fxt only available on win32 platform")
+
 
 def check_call(func):
     def wrapper(*args,**kwds):
@@ -27,6 +26,14 @@ def check_call(func):
     return wrapper
 
 
+def check_write_permissions(func, is_move_copy):
+    def wrapper(*args, **kwds):
+        set_write_permission(args[0])
+        if is_move_copy:
+            set_write_permission(args[1])
+        return func(*args, **kwds)
+    return wrapper
+
 try:
     import ctypes
     ktmw32 = ctypes.windll.ktmw32
@@ -34,9 +41,12 @@ try:
     CommitTransaction = check_call(ktmw32.CommitTransaction)
     RollbackTransaction = check_call(ktmw32.RollbackTransaction)
     kernel32 = ctypes.windll.kernel32
-    MoveFileTransacted = check_call(kernel32.MoveFileTransactedW)
-    CopyFileTransacted = check_call(kernel32.CopyFileTransactedW)
-    DeleteFileTransacted = check_call(kernel32.DeleteFileTransactedW)
+    MoveFileTransacted = check_write_permissions(
+        check_call(kernel32.MoveFileTransactedW), True)
+    CopyFileTransacted = check_write_permissions(
+        check_call(kernel32.CopyFileTransactedW), True)
+    DeleteFileTransacted = check_write_permissions(
+        check_call(kernel32.DeleteFileTransactedW), False)
     RemoveDirectoryTransacted = check_call(kernel32.RemoveDirectoryTransactedW)
     CreateDirectoryTransacted = check_call(kernel32.CreateDirectoryTransactedW)
 except (WindowsError,AttributeError):
@@ -202,8 +212,6 @@ class FSTransaction(object):
 
     def _remove(self,target):
         target = unicode_path(target)
-        if not os.access(target, os.W_OK):
-            os.chmod(target, stat.S_IWUSR)
         if os.path.isdir(target):
             for nm in os.listdir(target):
                 self.remove(os.path.join(target,nm))
