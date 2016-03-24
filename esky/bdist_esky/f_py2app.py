@@ -12,21 +12,17 @@ from __future__ import with_statement
 import os
 import sys
 import imp
-import time
-import errno
 import zipfile
 import shutil
-import tempfile
 import inspect
 import struct
 import marshal
-from StringIO import StringIO
 
 
 from py2app.build_app import py2app, get_zipfile, Target
 
 import esky
-from esky.util import is_core_dependency, create_zipfile
+from esky.util import create_zipfile
 
 
 def freeze(dist):
@@ -115,7 +111,12 @@ def freeze(dist):
                 #  guard will be more conservative.
                 pass
         copy_to_bootstrap_env("Contents/Resources/include")
-        copy_to_bootstrap_env("Contents/Resources/lib/"+pydir+"/config")
+        if sys.version_info[:2] < (3, 3):
+            copy_to_bootstrap_env("Contents/Resources/lib/"+pydir+"/config")
+        else:
+            copy_to_bootstrap_env("Contents/Resources/lib/"+pydir+"/config-%d.%dm"
+                                   % sys.version_info[:2])
+
         if "fcntl" not in sys.builtin_module_names:
             dynload = "Contents/Resources/lib/"+pydir+"/lib-dynload"
             for nm in os.listdir(os.path.join(app_dir,dynload)):

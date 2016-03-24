@@ -11,6 +11,7 @@ from __future__ import absolute_import
 
 import sys
 import errno
+LOCAL_HTTP_PORT = 8000
 
 #  Since esky apps are required to call the esky.run_startup_hooks() method on
 #  every invocation, we want as little overhead as possible when importing
@@ -130,6 +131,29 @@ def distutils():
     import distutils.util
     return distutils
 
+# imports for compile_to_bytecode util function
+if sys.version_info[:2] < (3, 4):
+    importlib = None
+    @lazy_import
+    def imp():
+        import imp
+        return imp
+        
+    @lazy_import
+    def marshal():
+        import marshal
+        return marshal
+        
+    @lazy_import
+    def struct():
+        import struct
+        return struct
+else:
+    @lazy_import
+    def importlib():
+        import importlib._bootstrap
+        return importlib
+
 
 from esky.bootstrap import appdir_from_executable as _bs_appdir_from_executable
 from esky.bootstrap import get_best_version, get_all_versions,\
@@ -224,6 +248,9 @@ def appdir_from_executable(exepath):
     # TODO: remove compatability hook for ESKY_APPDATA_DIR=""
     if ESKY_APPDATA_DIR and os.path.basename(appdir) == ESKY_APPDATA_DIR:
         appdir = os.path.dirname(appdir)
+        # Remove trailing slash if at the root of a drive on win32
+        if sys.platform == "win32" and len(appdir) == 3:
+            appdir = appdir[:2]
     return appdir
 
 
@@ -273,6 +300,11 @@ def extract_zipfile(source,target,name_filter=None):
                 outfilenm = os.path.join(target,nm)
             if not os.path.isdir(os.path.dirname(outfilenm)):
                 os.makedirs(os.path.dirname(outfilenm))
+            zinfo = zf.getinfo(nm)
+            if hex(zinfo.external_attr) == 2716663808L: # it's a symlink
+                target = zf.read(nm)
+                os.symlink(target, outfilenm)
+                continue
             infile = zf_open(nm,"r")
             try:
                 outfile = open(outfilenm,"wb")
@@ -282,7 +314,7 @@ def extract_zipfile(source,target,name_filter=None):
                     outfile.close()
             finally:
                 infile.close()
-            mode = zf.getinfo(nm).external_attr >> 16L
+            mode = zinfo.external_attr >> 16L
             if mode:
                 os.chmod(outfilenm,mode)
     finally:
@@ -362,13 +394,30 @@ def create_zipfile(source,target,get_zipinfo=None,members=None,compress=None):
             else:
                 zinfo = None
             fpath = os.path.join(source,fpath)
-        if zinfo is None:
-            zf.write(fpath,fpath[len(source)+1:])
-        elif isinstance(zinfo,basestring):
-            zf.write(fpath,zinfo)
-        else:
-            with open(fpath,"rb") as f:
-                zf.writestr(zinfo,f.read())
+        if os.path.islink(fpath):
+            # For information about adding symlinks to a zip file, see
+            # https://mail.python.org/pipermail/python-list/2005-June/322180.html
+            dest = os.readlink(fpath)
+            if zinfo is None:
+                zinfo = zipfile.ZipInfo()
+                zinfo.filename = fpath[len(source)+1:]
+            elif isinstance(zinfo,basestring):
+                link = zinfo
+                zinfo = zipfile.ZipInfo()
+                zinfo.filename = link
+            else: # isinstance(zinfo,zipfile.ZipInfo)
+                pass
+            zinfo.create_system = 3
+            zinfo.external_attr = 2716663808L # symlink: 0xA1ED0000
+            zf.writestr(zinfo,dest)
+        else: # not a symlink
+            if zinfo is None:
+                zf.write(fpath,fpath[len(source)+1:])
+            elif isinstance(zinfo,basestring):
+                zf.write(fpath,zinfo)
+            else:
+                with open(fpath,"rb") as f:
+                    zf.writestr(zinfo,f.read())
     zf.close()
 
 
@@ -480,7 +529,7 @@ def really_rename(source,target):
     if sys.platform != "win32":
         os.rename(source,target)
     else:
-        for _ in xrange(10):
+        for _ in xrange(100):
             try:
                 os.rename(source,target)
             except WindowsError, e:
@@ -508,7 +557,7 @@ def really_rmtree(path):
         if not os.path.exists(path):
             shutil.rmtree(path)
         #  This is a little retry loop that catches troublesome errors.
-        for _ in xrange(10):
+        for _ in xrange(100):
             try:
                 shutil.rmtree(path)
             except WindowsError, e:
@@ -525,3 +574,22 @@ def really_rmtree(path):
         else:
             shutil.rmtree(path)
 
+
+def compile_to_bytecode(source_code, compile_filename=None):
+    """Given source_code, return its compiled bytecode."""
+    if sys.version_info[:2] < (3, 1):
+        bytecode = imp.get_magic() + struct.pack("<i", 0)
+        bytecode += marshal.dumps(compile(source_code, compile_filename, "exec"))
+    elif sys.version_info[:2] < (3, 4):
+        bytecode = imp.get_magic() + struct.pack("<ii", 0, 0)
+        bytecode += marshal.dumps(compile(source_code, compile_filename, "exec"))
+    elif sys.version_info[:2] < (3, 5):
+        loader = importlib._bootstrap.SourceLoader()
+        code = loader.source_to_code(source_code, '<string>')
+        bytecode = importlib._bootstrap._code_to_bytecode(code, mtime=0, source_size=0)
+    else:
+        loader = importlib._bootstrap_external.SourceLoader()    
+        code = loader.source_to_code(source_code, '<string>')
+        bytecode = importlib._bootstrap_external._code_to_bytecode(code, mtime=0, source_size=0)
+
+    return bytecode

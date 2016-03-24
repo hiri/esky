@@ -178,5 +178,3 @@ class FSTransaction(object):
 
     def abort(self):
         del self.pending[:]
-
-

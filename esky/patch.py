@@ -67,6 +67,7 @@ import hashlib
 import optparse
 import zipfile
 import tempfile
+import json
 if sys.version_info[0] < 3:
     try:
         from cStringIO import StringIO as BytesIO
@@ -152,7 +153,7 @@ else:
                 ))
             #  Actually do the patching.
             return _cx_bsdiff.Patch(source,l_target,tcontrol,bdiff,bextra)
-
+    
 
 class bsdiff4_py(object):
     """Pure-python version of bsdiff4 module that can only patch, not diff.
@@ -231,6 +232,10 @@ HIGHEST_VERSION = 1
 
 #  Header bytes included in the patch file
 PATCH_HEADER = "ESKYPTCH".encode("ascii")
+
+#  Filename of the esky_filelist manifest file.
+#  esky_filelist lists all the files in the project
+ESKY_FILELIST = "esky_filelist.txt"
 
 
 from esky.errors import Error
@@ -417,6 +422,33 @@ def calculate_digest(target,hash=hashlib.md5):
     return d.digest()
 
 
+def calculate_patch_digest(target, hash=hashlib.md5):
+    """Calculate the digest of the entire project based on the files listed
+    in the esky_filelist. This will ensure that patches don't break if any
+    superfluous files have been added to the application folder"""
+    filelist = load_filelist(target)
+    if filelist is None:
+        # No filelist found, fall back to hashing entire directory
+        return calculate_digest(target, hash)
+    d = hash()
+    for f in filelist:
+        file_path = os.path.join(target, f)
+        d.update(os.path.basename(file_path).encode("utf8"))
+        d.update(calculate_digest(file_path, hash))
+    return d.digest()
+
+
+def load_filelist(root):
+    '''locates the esky file list, reads it and returns it as a sorted list'''
+    for path, dirs, files in os.walk(root):
+        for f in files:
+            if f == ESKY_FILELIST:
+                file_path = os.path.join(path, f)
+                with open(file_path) as list_file:
+                    filelist = json.loads(list_file.read())
+                    return sorted(filelist)
+
+
 class Patcher(object):
     """Class interpreting our patch protocol.
 
@@ -550,6 +582,33 @@ class Patcher(object):
         """Restore the object to a previously-saved state."""
         (self.target,self.root_dir,self.infile,self.outfile,self.new_target) = state
 
+    def _cleanup_patch(self):
+        '''Go throught the appdata folder of the new version and remove any files not 
+        in the filelist. If there is no filelist we do nothing
+        This prevents us from leaving old .pyc or .pyo files behind if we for instance 
+        change a module into a folder instead of a single file.
+        '''
+        filelist = load_filelist(self.target)
+        remove = ['.pyc', '.pyo']
+        if filelist is None:
+            return
+        else:
+            #we normalize the paths in filelist so that we can compare with the items
+            # in it later
+            filelist = [os.path.normpath(f) for f in filelist]
+            fileset = set(filelist)
+            dirname = self.target
+            for root, dirs, files in os.walk(self.target):
+                dirname = os.path.join(dirname, root)
+                for f in files:
+                    if f == ESKY_FILELIST:
+                        continue
+                    filepath = os.path.join(dirname, f)
+                    relpath = os.path.relpath(filepath, self.target)
+                    if os.path.normpath(relpath) not in fileset:
+                        if os.path.splitext(relpath)[-1] in remove:
+                            os.unlink(filepath)
+
     def patch(self):
         """Interpret and apply patch commands to the target.
 
@@ -569,6 +628,7 @@ class Patcher(object):
                 getattr(self,"_do_" + _COMMANDS[cmd])()
         except EOFError:
             self._check_end_patch()
+            self._cleanup_patch()
         finally:
             if self.infile:
                 self.infile.close()
@@ -646,7 +706,7 @@ class Patcher(object):
         digest = self._read(16)
         assert len(digest) == 16
         if not self.dry_run:
-            if digest != calculate_digest(self.target,hashlib.md5):
+            if digest != calculate_patch_digest(self.target,hashlib.md5):
                 raise PatchError("incorrect MD5 digest for %s" % (self.target,))
 
     def _do_MAKEDIR(self):
@@ -920,7 +980,7 @@ class Differ(object):
         self._write_command(SET_PATH)
         self._write_bytes("".encode("ascii"))
         self._write_command(VERIFY_MD5)
-        self._write(calculate_digest(target,hashlib.md5))
+        self._write(calculate_patch_digest(target,hashlib.md5))
 
     def _diff(self,source,target):
         """Recursively generate patch commands to transform source into target.
@@ -952,7 +1012,7 @@ class Differ(object):
             s_nm = os.path.join(source,nm)
             if not os.path.exists(s_nm):
                 sibnm = self._find_similar_sibling(source,target,nm)
-                if sibnm is not None:
+                if sibnm:
                     nm_sibnm_map[nm] = sibnm
                     try:
                         sibnm_nm_map[sibnm].append(nm)
@@ -1174,7 +1234,7 @@ class Differ(object):
             if not os.path.isdir(source):
                 return None
             t_names = set(os.listdir(t_nm))
-            best = (2,None)
+            best = (2,'')
             for sibnm in os.listdir(source):
                 if not os.path.isdir(os.path.join(source,sibnm)):
                     continue

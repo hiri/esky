@@ -11,18 +11,18 @@ from __future__ import with_statement
 
 import os
 import sys
-import imp
-import time
-import zipfile
 import marshal
 import struct
-import shutil
 import inspect
 import zipfile
 import ctypes
 
 
-from py2exe.build_exe import py2exe
+try:
+  from py2exe.build_exe import py2exe
+except ImportError:
+  from py2exe.distutils_buildexe import py2exe
+  
 
 import esky
 from esky.util import is_core_dependency, ESKY_CONTROL_DIR
@@ -226,7 +226,7 @@ def freeze(dist):
                          optmz, # optimization level to enable
                          unbfrd,  # whether to use unbuffered output
                          len(code),
-                      ) + "\x00" + code + "\x00\x00"
+                      ) + b"\x00" + code + b"\x00\x00"
             winres.add_resource(exepath,coderes,u"PYTHONSCRIPT",1,0)
         #  If the python dll hasn't been copied into the bootstrap env,
         #  make sure it's stored in each bootstrap dll as a resource.
@@ -264,6 +264,11 @@ sys.modules["esky.bootstrap"] = __fake()
 #  only works if we can bootstrap a working ctypes module.  We then insert
 #  the source code from esky.winres.load_resource directly into this function.
 #
+if sys.version_info[0] < 3:
+    EXEC_STATEMENT = "exec code in globals()"
+else:
+    EXEC_STATEMENT = "exec(code,globals())"
+
 _CUSTOM_WIN32_CHAINLOADER = """
 
 _orig_chainload = _chainload
@@ -372,10 +377,11 @@ def _chainload(target_dir):
       # Execute all code in the context of __main__ module.
       d_locals = d_globals = sys.modules["__main__"].__dict__
       d_locals["__name__"] = "__main__"
+
       for code in codelist:
-          exec code in d_globals, d_locals
+        %s
       raise SystemExit(0)
-""" % (inspect.getsource(winres.load_resource).replace("\n","\n"+" "*4),)
+""" % (inspect.getsource(winres.load_resource).replace("\n","\n"+" "*4), EXEC_STATEMENT)
 
 
 #  On Windows, execv is flaky and expensive.  Since the pypy-compiled bootstrap

@@ -8,22 +8,21 @@ Importing this module makes "bdist_esky" available as a distutils command.
 This command will freeze the given scripts and package them into a zipfile
 named with the application name, version and platform.
 
-The resulting zipfile is conveniently in the format expected by the class
-DefaultVersionFinder.  It will be named "appname-version.platform.zip"
-
+The main interface is the 'Esky' class, which represents a frozen app.  An Esky
+must be given the path to the top-level directory of the frozen app, and a
+'VersionFinder' object that it will use to search for updates.
 """
 
 from __future__ import with_statement
 
 
 import os
-import re
 import sys
 import shutil
-import zipfile
 import tempfile
 import hashlib
 import inspect
+import json
 from glob import glob
 
 import distutils.command
@@ -31,7 +30,7 @@ from distutils.core import Command
 from distutils.util import convert_path
 
 import esky.patch
-from esky.util import get_platform, is_core_dependency, create_zipfile, \
+from esky.util import get_platform, create_zipfile, \
                       split_app_version, join_app_version, ESKY_CONTROL_DIR, \
                       ESKY_APPDATA_DIR, really_rmtree
 
@@ -52,7 +51,7 @@ else:
 
 
 
-#  setuptools likes to be imported before anything else that
+# setuptools likes to be imported before anything else that
 #  might monkey-patch distutils.  We don't actually use it,
 #  this is just to avoid errors with cx_Freeze.
 try:
@@ -218,35 +217,37 @@ class bdist_esky(Command):
     description = "create a frozen app in 'esky' format"
 
     user_options = [
-                    ('dist-dir=', 'd',
-                     "directory to put final built distributions in"),
-                    ('freezer-module=', None,
-                     "module to use for freezing the application"),
-                    ('freezer-options=', None,
-                     "options to pass to the underlying freezer module"),
-                    ('bootstrap-module=', None,
-                     "module to use for bootstrapping the application"),
-                    ('bootstrap-code=', None,
-                     "code to use for bootstrapping the application"),
-                    ('compile-bootstrap-exes=', None,
-                     "whether to compile the bootstrapping exes with pypy"),
-                    ('bundle-msvcrt=', None,
-                     "whether to bundle MSVCRT as private assembly"),
-                    ('includes=', None,
-                     "list of modules to specifically include"),
-                    ('excludes=', None,
-                     "list of modules to specifically exclude"),
-                    ('dont-run-startup-hooks=', None,
-                     "don't force execution of esky.run_startup_hooks()"),
-                    ('pre-freeze-callback=', None,
-                     "function to call just before starting to freeze the app"),
-                    ('pre-zip-callback=', None,
-                     "function to call just before starting to zip up the app"),
-                    ('enable-appdata-dir=', None,
-                     "enable new 'appdata' directory layout (will go away after the 0.9.X series)"),
-                    ('detached-bootstrap-library=', None,
-                     "By default Esky appends the library.zip to the bootstrap executable when using CX_Freeze, this will tell esky to not do that, but create a separate library.zip instead"),
-                   ]
+        ('dist-dir=', 'd',
+         "directory to put final built distributions in"),
+        ('freezer-module=', None,
+         "module to use for freezing the application"),
+        ('freezer-options=', None,
+         "options to pass to the underlying freezer module"),
+        ('bootstrap-module=', None,
+         "module to use for bootstrapping the application"),
+        ('bootstrap-code=', None,
+         "code to use for bootstrapping the application"),
+        ('compile-bootstrap-exes=', None,
+         "whether to compile the bootstrapping exes with pypy"),
+        ('bundle-msvcrt=', None,
+         "whether to bundle MSVCRT as private assembly"),
+        ('includes=', None,
+         "list of modules to specifically include"),
+        ('excludes=', None,
+         "list of modules to specifically exclude"),
+        ('dont-run-startup-hooks=', None,
+         "don't force execution of esky.run_startup_hooks()"),
+        ('pre-freeze-callback=', None,
+         "function to call just before starting to freeze the app"),
+        ('pre-zip-callback=', None,
+         "function to call just before starting to zip up the app"),
+        ('enable-appdata-dir=', None,
+         "enable new 'appdata' directory layout (will go away after the 0.9.X series)"),
+        ('detached-bootstrap-library=', None,
+         "By default Esky appends the library.zip to the bootstrap executable when using CX_Freeze, this will tell esky to not do that, but create a separate library.zip instead"),
+        ('compress=', 'c',
+         "Compression options of the Esky, use lower case for compressed or upper case for uncompressed, currently only support zip files"),
+    ]
 
     boolean_options = ["bundle-msvcrt","dont-run-startup-hooks","compile-bootstrap-exes","enable-appdata-dir"]
 
@@ -266,8 +267,11 @@ class bdist_esky(Command):
         self.pre_zip_callback = None
         self.enable_appdata_dir = False
         self.detached_bootstrap_library = False
+        self.compress = 'zip'
 
     def finalize_options(self):
+        assert self.compress in (False, None, 'false', 'none', 'zip', 'ZIP'), 'Bad options passed to compress'
+
         self.set_undefined_options('bdist',('dist_dir', 'dist_dir'))
         if self.compile_bootstrap_exes and pypyc is None:
             raise PYPYC_ERROR
@@ -320,6 +324,7 @@ class bdist_esky(Command):
         self._run_freeze_scripts()
         if self.pre_zip_callback is not None:
             self.pre_zip_callback(self)
+        self._generate_filelist_manifest()
         self._run_create_zipfile()
 
     def _run_initialise_dirs(self):
@@ -348,17 +353,37 @@ class bdist_esky(Command):
             with open(lockfile,"w") as lf:
                 lf.write("this file is used by esky to lock the version dir\n")
 
+
+    def _generate_filelist_manifest(self):
+        """Create a list of all the files in application"""
+        filelist_file = os.path.join(self.freeze_dir,ESKY_CONTROL_DIR, esky.patch.ESKY_FILELIST)
+        esky_files  = []
+        for root, dirs, files in os.walk(self.bootstrap_dir):
+            for f in files:
+                esky_files.append(os.path.join(os.path.relpath(root, self.bootstrap_dir), f))
+        with open(filelist_file, 'w') as f:
+            f.write(json.dumps(esky_files))
+
+
     def _run_create_zipfile(self):
         """Zip up the final distribution."""
-        print "zipping up the esky"
-        fullname = self.distribution.get_fullname()
-        platform = get_platform()
-        zfname = os.path.join(self.dist_dir,"%s.%s.zip"%(fullname,platform,))
-        if hasattr(self.freezer_module,"zipit"):
-            self.freezer_module.zipit(self,self.bootstrap_dir,zfname)
-        else:
-            create_zipfile(self.bootstrap_dir,zfname,compress=True)
-        really_rmtree(self.bootstrap_dir)
+        if self.compress:
+            fullname = self.distribution.get_fullname()
+            platform = get_platform()
+            zfname = os.path.join(self.dist_dir,"%s.%s.zip"%(fullname,platform,))
+            if hasattr(self.freezer_module,"zipit"):
+                self.freezer_module.zipit(self,self.bootstrap_dir,zfname)
+            else:
+                if self.compress == 'zip':
+                    print "zipping up the esky with compression"
+                    create_zipfile(self.bootstrap_dir,zfname,compress=True)
+                    really_rmtree(self.bootstrap_dir)
+                elif self.compress == 'ZIP':
+                    print "zipping up the esky without compression"
+                    create_zipfile(self.bootstrap_dir,zfname,compress=False)
+                    really_rmtree(self.bootstrap_dir)
+                else:
+                    print("To zip the esky use compress or c set to ZIP or zip")
 
     def _obj2code(self,obj):
         """Convert an object to some python source code.
